@@ -83,6 +83,11 @@ const state = {
   recording: false,
   frameAccumulator: 0,
   lastTime: 0,
+  crop: {
+    active: false,
+    rect: null,
+    preview: true,
+  },
 };
 
 const canvas = document.getElementById("canvas");
@@ -91,12 +96,24 @@ const jointsFile = document.getElementById("jointsFile");
 const ricFile = document.getElementById("ricFile");
 const npyFile = document.getElementById("npyFile");
 const recordBtn = document.getElementById("recordBtn");
+const cropBtn = document.getElementById("cropBtn");
+const clearCropBtn = document.getElementById("clearCropBtn");
+const applyCropBtn = document.getElementById("applyCropBtn");
+const cropX = document.getElementById("cropX");
+const cropY = document.getElementById("cropY");
+const cropW = document.getElementById("cropW");
+const cropH = document.getElementById("cropH");
+const cropPreview = document.getElementById("cropPreview");
 const fpsInput = document.getElementById("fpsInput");
 const frameScrub = document.getElementById("frameScrub");
 const status = document.getElementById("status");
+const cropOverlay = document.getElementById("cropOverlay");
+const cropBox = document.getElementById("cropBox");
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const cropCanvas = document.createElement("canvas");
+const cropCtx = cropCanvas.getContext("2d");
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xffffff);
@@ -380,6 +397,9 @@ function animate(time) {
   }
   controls.update();
   renderer.render(scene, camera);
+  if (state.recording && state.crop.active && state.crop.rect) {
+    drawCropFrame();
+  }
   requestAnimationFrame(animate);
 }
 
@@ -673,6 +693,39 @@ npyFile.addEventListener("change", (event) => {
 let recorder = null;
 let recordChunks = [];
 
+function getCropSourceRect() {
+  if (!state.crop.rect) return null;
+  const rect = state.crop.rect;
+  const canvasRect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / canvasRect.width;
+  const scaleY = canvas.height / canvasRect.height;
+  const sx = Math.round(rect.x * scaleX);
+  const sy = Math.round(rect.y * scaleY);
+  const sw = Math.max(1, Math.round(rect.width * scaleX));
+  const sh = Math.max(1, Math.round(rect.height * scaleY));
+  return { sx, sy, sw, sh };
+}
+
+function drawCropFrame() {
+  const src = getCropSourceRect();
+  if (!src) return;
+  if (cropCanvas.width !== src.sw || cropCanvas.height !== src.sh) {
+    cropCanvas.width = src.sw;
+    cropCanvas.height = src.sh;
+  }
+  cropCtx.drawImage(
+    canvas,
+    src.sx,
+    src.sy,
+    src.sw,
+    src.sh,
+    0,
+    0,
+    cropCanvas.width,
+    cropCanvas.height
+  );
+}
+
 function startRecording() {
   if (state.maxFrames <= 1) return;
   if (!canvas.captureStream || !window.MediaRecorder) {
@@ -681,7 +734,9 @@ function startRecording() {
   }
   recordChunks = [];
   const resumeAfter = state.playing;
-  const stream = canvas.captureStream(state.fps);
+  const stream = state.crop.active && state.crop.rect
+    ? cropCanvas.captureStream(state.fps)
+    : canvas.captureStream(state.fps);
   recorder = new MediaRecorder(stream, { mimeType: "video/webm" });
   recorder.ondataavailable = (event) => {
     if (event.data.size > 0) recordChunks.push(event.data);
@@ -707,6 +762,9 @@ function startRecording() {
   state.frameAccumulator = 0;
   state.lastTime = 0;
   updateSkeleton(0);
+  if (state.crop.active && state.crop.rect) {
+    drawCropFrame();
+  }
   recordBtn.textContent = "Recording...";
 }
 
@@ -724,6 +782,103 @@ recordBtn.addEventListener("click", () => {
     stopRecording();
   } else {
     startRecording();
+  }
+});
+
+let cropDrag = null;
+
+function updateCropBox(rect) {
+  if (!cropBox || !rect || !state.crop.preview) return;
+  cropBox.style.display = "block";
+  cropBox.style.left = `${rect.x}px`;
+  cropBox.style.top = `${rect.y}px`;
+  cropBox.style.width = `${rect.width}px`;
+  cropBox.style.height = `${rect.height}px`;
+  if (cropX) cropX.value = Math.round(rect.x);
+  if (cropY) cropY.value = Math.round(rect.y);
+  if (cropW) cropW.value = Math.round(rect.width);
+  if (cropH) cropH.value = Math.round(rect.height);
+}
+
+function clearCrop() {
+  state.crop.active = false;
+  state.crop.rect = null;
+  if (cropBox) cropBox.style.display = "none";
+  if (cropBtn) cropBtn.textContent = "Select Crop";
+  if (cropOverlay) cropOverlay.style.pointerEvents = "none";
+}
+
+function enableCropSelection() {
+  state.crop.active = true;
+  if (cropBtn) cropBtn.textContent = "Drag Crop";
+  if (cropOverlay) cropOverlay.style.pointerEvents = "auto";
+}
+
+cropBtn.addEventListener("click", () => {
+  if (!state.crop.active) {
+    enableCropSelection();
+  } else {
+    cropBtn.textContent = "Select Crop";
+  }
+});
+
+clearCropBtn.addEventListener("click", () => {
+  clearCrop();
+});
+
+cropOverlay.addEventListener("pointerdown", (event) => {
+  if (!state.crop.active) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
+  const y = Math.max(0, Math.min(rect.height, event.clientY - rect.top));
+  cropDrag = { startX: x, startY: y };
+  cropOverlay.setPointerCapture(event.pointerId);
+});
+
+cropOverlay.addEventListener("pointermove", (event) => {
+  if (!state.crop.active || !cropDrag) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
+  const y = Math.max(0, Math.min(rect.height, event.clientY - rect.top));
+  const left = Math.min(cropDrag.startX, x);
+  const top = Math.min(cropDrag.startY, y);
+  const width = Math.max(4, Math.abs(x - cropDrag.startX));
+  const height = Math.max(4, Math.abs(y - cropDrag.startY));
+  const cropRect = { x: left, y: top, width, height };
+  state.crop.rect = cropRect;
+  updateCropBox(cropRect);
+});
+
+cropOverlay.addEventListener("pointerup", (event) => {
+  if (!state.crop.active || !cropDrag) return;
+  cropDrag = null;
+  cropOverlay.releasePointerCapture(event.pointerId);
+  if (cropBtn) cropBtn.textContent = "Select Crop";
+  if (cropOverlay) cropOverlay.style.pointerEvents = "none";
+});
+
+cropOverlay.addEventListener("pointerleave", () => {
+  if (!state.crop.active || !cropDrag) return;
+  cropDrag = null;
+});
+
+applyCropBtn.addEventListener("click", () => {
+  const rect = canvas.getBoundingClientRect();
+  const x = Math.max(0, Math.min(rect.width, Number(cropX.value)));
+  const y = Math.max(0, Math.min(rect.height, Number(cropY.value)));
+  const width = Math.max(1, Math.min(rect.width - x, Number(cropW.value)));
+  const height = Math.max(1, Math.min(rect.height - y, Number(cropH.value)));
+  state.crop.active = true;
+  state.crop.rect = { x, y, width, height };
+  updateCropBox(state.crop.rect);
+});
+
+cropPreview.addEventListener("change", (event) => {
+  state.crop.preview = event.target.checked;
+  if (state.crop.preview && state.crop.rect) {
+    updateCropBox(state.crop.rect);
+  } else if (cropBox) {
+    cropBox.style.display = "none";
   }
 });
 

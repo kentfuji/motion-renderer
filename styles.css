@@ -90,6 +90,20 @@ body {
   display: block;
 }
 
+.crop-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.crop-box {
+  position: absolute;
+  border: 2px dashed rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.05);
+  box-shadow: 0 0 0 9999px rgba(255, 255, 255, 0.4);
+  display: none;
+}
+
 .hint {
   position: absolute;
   bottom: 18px;
