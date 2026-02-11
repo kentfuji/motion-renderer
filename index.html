@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Motion Render</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">Motion Render</div>
+      <div class="controls">
+        <button id="playPause" class="btn">Play</button>
+        <label class="btn file-btn">
+          Load Joints JSON
+          <input id="jointsFile" type="file" accept="application/json" />
+        </label>
+        <label class="btn file-btn">
+          Load RIC JSON
+          <input id="ricFile" type="file" accept="application/json" />
+        </label>
+        <label class="btn file-btn">
+          Load NPY
+          <input id="npyFile" type="file" accept=".npy" />
+        </label>
+        <button id="recordBtn" class="btn">Record WebM</button>
+        <label class="field">
+          FPS
+          <input id="fpsInput" type="number" value="30" min="1" max="240" />
+        </label>
+        <label class="field">
+          Frame
+          <input id="frameScrub" type="range" min="0" max="0" value="0" />
+        </label>
+      </div>
+    </header>
+
+    <main class="stage">
+      <canvas id="canvas"></canvas>
+      <div class="hint">
+        Drag to orbit · Scroll to zoom · Load a JSON file to replace the demo
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div id="status">Loaded: idle pose</div>
+      <div>Format: Joints JSON = frames x joints x 3. RIC JSON = packed data + joints_num.</div>
+    </footer>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
