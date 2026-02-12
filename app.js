@@ -168,6 +168,7 @@ function setCameraDefault() {
   camera.lookAt(0, 1, 0);
   controls.target.set(0, 1, 0);
   controls.update();
+  controls.saveState();
 }
 
 function resize() {
@@ -367,7 +368,6 @@ function setFrames(frames) {
   frameScrub.max = Math.max(0, state.maxFrames - 1);
   frameScrub.value = "0";
   buildSkeletonMeshes();
-  setCameraDefault();
   updateSkeleton(0);
   if (status) {
     status.textContent = `Loaded: ${state.source} (${state.maxFrames} frames)`;
@@ -537,8 +537,10 @@ function parseNpy(buffer) {
 
   const descrRegex = /['"]descr['"]\s*:\s*['"]([^'"]+)['"]/;
   const shapeRegex = /['"]shape['"]\s*:\s*\(([^)]*)\)/;
+  const fortranRegex = /['"]fortran_order['"]\s*:\s*(True|False)/;
   const descrMatch = headerText.match(descrRegex);
   const shapeMatch = headerText.match(shapeRegex);
+  const fortranMatch = headerText.match(fortranRegex);
   if (!descrMatch || !shapeMatch) {
     return {
       ok: false,
@@ -551,6 +553,7 @@ function parseNpy(buffer) {
     };
   }
   const descr = descrMatch[1];
+  const fortranOrder = fortranMatch ? fortranMatch[1] === "True" : false;
   const shape = shapeMatch[1]
     .split(",")
     .map((v) => v.trim())
@@ -578,11 +581,12 @@ function parseNpy(buffer) {
   for (let r = 0; r < rows; r += 1) {
     const row = new Array(cols);
     for (let c = 0; c < cols; c += 1) {
-      row[c] = data[r * cols + c];
+      const idx = fortranOrder ? c * rows + r : r * cols + c;
+      row[c] = data[idx];
     }
     frames[r] = row;
   }
-  return { ok: true, frames, shape, descr, headerText };
+  return { ok: true, frames, shape, descr, headerText, fortranOrder };
 }
 
 function ricFromNpy(frames) {
