@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Occupancy Render</title>
+		<link rel="stylesheet" href="styles.css" />
+	</head>
+	<body>
+		<header class="topbar">
+			<div class="brand">Occupancy Render</div>
+			<div class="controls">
+				<button id="playPause" class="btn">Play</button>
+				<label class="btn file-btn">
+					Load Occupancy NPZ
+					<input id="npzFile" type="file" accept=".npz" />
+				</label>
+				<label class="btn file-btn">
+					Load Joints JSON
+					<input id="jointsFile" type="file" accept="application/json" />
+				</label>
+				<label class="btn file-btn">
+					Load RIC JSON
+					<input id="ricFile" type="file" accept="application/json" />
+				</label>
+				<label class="btn file-btn">
+					Load Motion NPY
+					<input id="npyFile" type="file" accept=".npy" />
+				</label>
+				<button id="recordBtn" class="btn">Record WebM</button>
+				<button id="cropBtn" class="btn">Select Crop</button>
+				<button id="clearCropBtn" class="btn">Clear Crop</button>
+				<label class="field">
+					Crop X
+					<input id="cropX" type="number" min="0" value="0" />
+				</label>
+				<label class="field">
+					Crop Y
+					<input id="cropY" type="number" min="0" value="0" />
+				</label>
+				<label class="field">
+					Crop W
+					<input id="cropW" type="number" min="1" value="640" />
+				</label>
+				<label class="field">
+					Crop H
+					<input id="cropH" type="number" min="1" value="480" />
+				</label>
+				<button id="applyCropBtn" class="btn">Apply Crop</button>
+				<label class="field">
+					<input id="cropPreview" type="checkbox" checked />
+					Preview Crop
+				</label>
+				<label class="field">
+					<input id="followRoot" type="checkbox" checked />
+					Follow Root
+				</label>
+				<label class="field">
+					<input id="showTrajectory" type="checkbox" checked />
+					Trajectory
+				</label>
+				<label class="field">
+					<input id="showMesh" type="checkbox" checked />
+					SMPL Mesh
+				</label>
+				<label class="field">
+					FPS
+					<input id="fpsInput" type="number" value="30" min="1" max="240" />
+				</label>
+				<label class="field">
+					Frame
+					<input id="frameScrub" type="range" min="0" max="0" value="0" />
+				</label>
+			</div>
+		</header>
+
+		<main class="stage">
+			<canvas id="canvas"></canvas>
+			<div id="cropOverlay" class="crop-overlay">
+				<div id="cropBox" class="crop-box"></div>
+			</div>
+			<div class="hint">
+				Drag to orbit · Scroll to zoom · Load a process_occ NPZ for occupancy and optional SMPL vertices, then load motion from a separate file like motion-render
+			</div>
+		</main>
+
+		<footer class="footer">
+			<div id="status">Motion: idle · Occupancy: none</div>
+			<div id="stats">Load an occupancy NPZ with global_occ, llb, and unit.</div>
+		</footer>
+
+		<script type="importmap">
+			{
+				"imports": {
+					"three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+					"three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+					"fflate": "https://esm.sh/fflate@0.8.2"
+				}
+			}
+		</script>
+		<script type="module" src="occupancy.js"></script>
+	</body>
+</html>
