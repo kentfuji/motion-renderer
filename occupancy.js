@@ -40,6 +40,7 @@ const state = {
 	maxFrames: 0,
 	motionSource: "none",
 	occupancySource: "none",
+	meshSource: "none",
 	rootPositions: [],
 	trajectory: [],
 	followRoot: true,
@@ -54,6 +55,7 @@ const state = {
 	npzRootPositions: [],
 	npzVertices: [],
 	npzFaces: [],
+	meshWarning: "",
 	min: new THREE.Vector3(),
 	max: new THREE.Vector3(),
 	crop: {
@@ -66,6 +68,7 @@ const state = {
 const canvas = document.getElementById("canvas");
 const playPause = document.getElementById("playPause");
 const npzFile = document.getElementById("npzFile");
+const meshNpzFile = document.getElementById("meshNpzFile");
 const jointsFile = document.getElementById("jointsFile");
 const ricFile = document.getElementById("ricFile");
 const npyFile = document.getElementById("npyFile");
@@ -519,7 +522,7 @@ function updateFrame(frameIndex) {
 }
 
 function updateStatus() {
-	status.textContent = `Motion: ${state.motionSource} · Occupancy: ${state.occupancySource}`;
+	status.textContent = `Motion: ${state.motionSource} · Occupancy: ${state.occupancySource} · Mesh: ${state.meshSource}`;
 	const motionBounds = computeBounds(flattenMotionFrames(state.frames));
 	const occupancyBounds = computeBounds(state.voxelPositions);
 	const meshBounds = computeBounds(state.npzVertices.flat());
@@ -538,7 +541,8 @@ function updateStatus() {
 		: "Root match: unavailable";
 	const occModeText = state.inverseOccupancy ? "inverse occupancy voxels" : "free occupancy voxels";
 	const occCutText = state.cutTopHalf ? " · top half cut" : "";
-	stats.textContent = `Frames: ${state.maxFrames} · ${occModeText}: ${state.voxelPositions.length.toLocaleString()}${occCutText} · Voxel unit: ${state.voxelUnit} · ${motionText} · ${occupancyText} · ${meshText} · ${trajText}`;
+	const meshWarnText = state.meshWarning ? ` · ${state.meshWarning}` : "";
+	stats.textContent = `Frames: ${state.maxFrames} · ${occModeText}: ${state.voxelPositions.length.toLocaleString()}${occCutText} · Voxel unit: ${state.voxelUnit} · ${motionText} · ${occupancyText} · ${meshText} · ${trajText}${meshWarnText}`;
 }
 
 function applyState() {
@@ -573,17 +577,19 @@ function setMotionFrames(frames, sourceName) {
 function setOccupancyData(
 	voxelPositions,
 	unit,
-	sourceName,
-	npzRootPositions = [],
-	npzVertices = [],
-	npzFaces = []
+	sourceName
 ) {
 	state.voxelPositions = voxelPositions;
 	state.voxelUnit = unit;
+	state.occupancySource = sourceName;
+	applyState();
+}
+
+function setMeshData(npzRootPositions, npzVertices, npzFaces, sourceName) {
 	state.npzRootPositions = npzRootPositions;
 	state.npzVertices = npzVertices;
 	state.npzFaces = npzFaces;
-	state.occupancySource = sourceName;
+	state.meshSource = sourceName;
 	applyState();
 }
 
@@ -784,14 +790,59 @@ function ricFromNpy(frames) {
 function parseProcessOccNpz(buffer) {
 	const files = unzipSync(new Uint8Array(buffer));
 	const arrays = {};
+	const parseErrors = {};
 	for (const [name, bytes] of Object.entries(files)) {
 		if (!name.endsWith(".npy")) continue;
-		arrays[name.replace(/\.npy$/, "")] = parseNpy(bytes);
+		const key = name.replace(/\.npy$/, "");
+		try {
+			arrays[key] = parseNpy(bytes);
+		} catch (error) {
+			parseErrors[key] = error instanceof Error ? error.message : String(error);
+		}
 	}
-	if (!arrays.global_occ || !arrays.llb || !arrays.unit) {
-		throw new Error("NPZ is missing one of: global_occ, llb, unit");
+	const required = ["global_occ", "llb", "unit"];
+	const missing = required.filter((key) => !arrays[key]);
+	if (missing.length) {
+		const reasons = missing
+			.map((key) => (parseErrors[key] ? `${key} parse failed: ${parseErrors[key]}` : `${key} missing`))
+			.join(" | ");
+		throw new Error(`NPZ missing required occupancy arrays. ${reasons}`);
 	}
 	return arrays;
+}
+
+function parseGenericNpz(buffer) {
+	const files = unzipSync(new Uint8Array(buffer));
+	const arrays = {};
+	for (const [name, bytes] of Object.entries(files)) {
+		if (!name.endsWith(".npy")) continue;
+		const key = name.replace(/\.npy$/, "");
+		try {
+			arrays[key] = parseNpy(bytes);
+		} catch {
+			// Ignore unsupported arrays (e.g. string metadata) for generic mesh loading.
+		}
+	}
+	return arrays;
+}
+
+function pickArray(arrays, keys) {
+	for (const key of keys) {
+		if (arrays[key]) return arrays[key];
+	}
+	return null;
+}
+
+function extractMeshData(arrays) {
+	const verticesArray = pickArray(arrays, ["vertices", "verts", "smpl_verts", "smpl_vertices"]);
+	const facesArray = pickArray(arrays, ["faces", "smpl_faces"]);
+	const rootsArray = pickArray(arrays, ["root_pos", "transl"]);
+	const npzVertices = verticesArray
+		? vectorFrames(verticesArray).map((frame) => frame.map(zUpToYUp))
+		: [];
+	const npzFaces = facesArray ? vectorIndices(facesArray) : [];
+	const npzRootPositions = rootsArray ? vectorRows(rootsArray).map(zUpToYUp) : [];
+	return { npzVertices, npzFaces, npzRootPositions };
 }
 
 function vectorValue(arrayInfo) {
@@ -804,6 +855,38 @@ function scalarValue(arrayInfo) {
 
 function zUpToYUp(point) {
 	return [point[0], point[2], point[1]];
+}
+
+function isFiniteVector3(v) {
+	return Array.isArray(v) && v.length >= 3 && Number.isFinite(v[0]) && Number.isFinite(v[1]) && Number.isFinite(v[2]);
+}
+
+function deriveFallbackLlb(arrays, unit) {
+	const rootRows = arrays.root_pos ? vectorRows(arrays.root_pos) : [];
+	const translRows = arrays.transl ? vectorRows(arrays.transl) : [];
+	const candidates = rootRows.length ? rootRows : translRows;
+	if (candidates.length) {
+		const min = [Infinity, Infinity, Infinity];
+		for (const row of candidates) {
+			if (!isFiniteVector3(row)) continue;
+			min[0] = Math.min(min[0], row[0]);
+			min[1] = Math.min(min[1], row[1]);
+			min[2] = Math.min(min[2], row[2]);
+		}
+		if (isFiniteVector3(min)) {
+			return min;
+		}
+	}
+	const half = 12.5 * unit;
+	return [-half, -half, -half];
+}
+
+function sanitizeLlb(llb, arrays, unit) {
+	if (isFiniteVector3(llb)) {
+		return { value: llb, usedFallback: false };
+	}
+	const fallback = deriveFallbackLlb(arrays, unit);
+	return { value: fallback, usedFallback: true };
 }
 
 function extractVoxelPositions(globalOcc, llb, unit, inverse = false, cutTopHalf = false) {
@@ -865,8 +948,10 @@ function loadOccupancyFile(file) {
 	reader.onload = () => {
 		try {
 			const arrays = parseProcessOccNpz(reader.result);
-			const llb = vectorValue(arrays.llb);
+			const rawLlb = vectorValue(arrays.llb);
 			const unit = scalarValue(arrays.unit);
+			const llbInfo = sanitizeLlb(rawLlb, arrays, unit);
+			const llb = llbInfo.value;
 			state.occupancyGrid = arrays.global_occ;
 			state.occupancyLlb = llb;
 			const voxelPositions = extractVoxelPositions(
@@ -876,17 +961,40 @@ function loadOccupancyFile(file) {
 				state.inverseOccupancy,
 				state.cutTopHalf
 			);
-			const npzRootPositions = arrays.root_pos
-				? vectorRows(arrays.root_pos).map(zUpToYUp)
-				: [];
-			const npzVertices = arrays.vertices
-				? vectorFrames(arrays.vertices).map((frame) => frame.map(zUpToYUp))
-				: [];
-			const npzFaces = arrays.faces ? vectorIndices(arrays.faces) : [];
-			setOccupancyData(voxelPositions, unit, file.name, npzRootPositions, npzVertices, npzFaces);
+			setOccupancyData(voxelPositions, unit, file.name);
+			const meshData = extractMeshData(arrays);
+			if (meshData.npzVertices.length) {
+				state.meshWarning = "";
+				setMeshData(meshData.npzRootPositions, meshData.npzVertices, meshData.npzFaces, `${file.name} (embedded)`);
+			} else if (!state.npzVertices.length) {
+				state.meshWarning = "SMPL mesh unavailable: load a separate mesh NPZ";
+			}
+			if (llbInfo.usedFallback) {
+				status.textContent = `Motion: ${state.motionSource} · Occupancy: ${state.occupancySource} (fallback llb) · Mesh: ${state.meshSource}`;
+			}
 		} catch (error) {
 			console.error(error);
 			alert(`Failed to parse occupancy NPZ: ${error.message}`);
+		}
+	};
+	reader.readAsArrayBuffer(file);
+}
+
+function loadMeshNpzFile(file) {
+	const reader = new FileReader();
+	reader.onload = () => {
+		try {
+			const arrays = parseGenericNpz(reader.result);
+			const meshData = extractMeshData(arrays);
+			if (!meshData.npzVertices.length) {
+				alert("Mesh NPZ is missing vertices array (expected one of: vertices, verts, smpl_verts, smpl_vertices).");
+				return;
+			}
+			state.meshWarning = "";
+			setMeshData(meshData.npzRootPositions, meshData.npzVertices, meshData.npzFaces, file.name);
+		} catch (error) {
+			console.error(error);
+			alert(`Failed to parse mesh NPZ: ${error.message}`);
 		}
 	};
 	reader.readAsArrayBuffer(file);
@@ -998,6 +1106,12 @@ npzFile.addEventListener("change", (event) => {
 	const file = event.target.files[0];
 	if (!file) return;
 	loadOccupancyFile(file);
+});
+
+meshNpzFile.addEventListener("change", (event) => {
+	const file = event.target.files[0];
+	if (!file) return;
+	loadMeshNpzFile(file);
 });
 
 jointsFile.addEventListener("change", (event) => {
@@ -1224,6 +1338,6 @@ cropPreview.addEventListener("change", (event) => {
 	}
 });
 
-setOccupancyData([], 0.08, "none", [], []);
+setOccupancyData([], 0.08, "none");
 setCameraDefault();
 requestAnimationFrame(animate);
