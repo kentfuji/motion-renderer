@@ -64,6 +64,14 @@
 					SMPL Mesh
 				</label>
 				<label class="field">
+					<input id="inverseOccupancy" type="checkbox" />
+					Inverse Occupancy
+				</label>
+				<label class="field">
+					<input id="cutTopHalf" type="checkbox" />
+					Cut Top Half
+				</label>
+				<label class="field">
 					FPS
 					<input id="fpsInput" type="number" value="30" min="1" max="240" />
 				</label>
@@ -85,7 +93,7 @@
 		</main>
 
 		<footer class="footer">
-			<div id="status">Motion: idle · Occupancy: none</div>
+			<div id="status">Motion: none · Occupancy: none</div>
 			<div id="stats">Load an occupancy NPZ with global_occ, llb, and unit.</div>
 		</footer>
 

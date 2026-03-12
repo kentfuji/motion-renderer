@@ -45,8 +45,12 @@ const state = {
 	followRoot: true,
 	showTrajectory: true,
 	showMesh: true,
+	inverseOccupancy: false,
+	cutTopHalf: false,
 	voxelUnit: 0.08,
 	voxelPositions: [],
+	occupancyGrid: null,
+	occupancyLlb: [],
 	npzRootPositions: [],
 	npzVertices: [],
 	npzFaces: [],
@@ -77,6 +81,8 @@ const cropPreview = document.getElementById("cropPreview");
 const followRoot = document.getElementById("followRoot");
 const showTrajectory = document.getElementById("showTrajectory");
 const showMesh = document.getElementById("showMesh");
+const inverseOccupancy = document.getElementById("inverseOccupancy");
+const cutTopHalf = document.getElementById("cutTopHalf");
 const fpsInput = document.getElementById("fpsInput");
 const frameScrub = document.getElementById("frameScrub");
 const status = document.getElementById("status");
@@ -530,7 +536,9 @@ function updateStatus() {
 	const trajText = trajError
 		? `Root match mean/max: ${trajError.mean.toExponential(2)} / ${trajError.max.toExponential(2)}`
 		: "Root match: unavailable";
-	stats.textContent = `Frames: ${state.maxFrames} · Free or swept voxels: ${state.voxelPositions.length.toLocaleString()} · Voxel unit: ${state.voxelUnit} · ${motionText} · ${occupancyText} · ${meshText} · ${trajText}`;
+	const occModeText = state.inverseOccupancy ? "inverse occupancy voxels" : "free occupancy voxels";
+	const occCutText = state.cutTopHalf ? " · top half cut" : "";
+	stats.textContent = `Frames: ${state.maxFrames} · ${occModeText}: ${state.voxelPositions.length.toLocaleString()}${occCutText} · Voxel unit: ${state.voxelUnit} · ${motionText} · ${occupancyText} · ${meshText} · ${trajText}`;
 }
 
 function applyState() {
@@ -798,24 +806,44 @@ function zUpToYUp(point) {
 	return [point[0], point[2], point[1]];
 }
 
-function extractFreeVoxelPositions(globalOcc, llb, unit) {
+function extractVoxelPositions(globalOcc, llb, unit, inverse = false, cutTopHalf = false) {
 	const [sx, sy, sz] = globalOcc.shape;
+	const yMid = llb[2] + sz * unit * 0.5;
 	const positions = [];
 	const data = globalOcc.data;
 	for (let x = 0; x < sx; x += 1) {
 		for (let y = 0; y < sy; y += 1) {
 			for (let z = 0; z < sz; z += 1) {
 				const idx = x * sy * sz + y * sz + z;
-				if (data[idx] !== 0) continue;
-				positions.push(zUpToYUp([
+				const isFree = data[idx] === 0;
+				const keep = inverse ? !isFree : isFree;
+				if (!keep) continue;
+				const point = zUpToYUp([
 					llb[0] + (x + 0.5) * unit,
 					llb[1] + (y + 0.5) * unit,
 					llb[2] + (z + 0.5) * unit,
-				]));
+				]);
+				if (cutTopHalf && point[1] > yMid) continue;
+				positions.push(point);
 			}
 		}
 	}
 	return positions;
+}
+
+function refreshOccupancyVoxels() {
+	if (!state.occupancyGrid || state.occupancyLlb.length < 3) return;
+	state.voxelPositions = extractVoxelPositions(
+		state.occupancyGrid,
+		state.occupancyLlb,
+		state.voxelUnit,
+		state.inverseOccupancy,
+		state.cutTopHalf
+	);
+	computeStats();
+	buildVoxelMesh();
+	updateFrame(state.frame);
+	updateStatus();
 }
 
 function loadJsonFile(file, handler) {
@@ -839,7 +867,15 @@ function loadOccupancyFile(file) {
 			const arrays = parseProcessOccNpz(reader.result);
 			const llb = vectorValue(arrays.llb);
 			const unit = scalarValue(arrays.unit);
-			const voxelPositions = extractFreeVoxelPositions(arrays.global_occ, llb, unit);
+			state.occupancyGrid = arrays.global_occ;
+			state.occupancyLlb = llb;
+			const voxelPositions = extractVoxelPositions(
+				arrays.global_occ,
+				llb,
+				unit,
+				state.inverseOccupancy,
+				state.cutTopHalf
+			);
 			const npzRootPositions = arrays.root_pos
 				? vectorRows(arrays.root_pos).map(zUpToYUp)
 				: [];
@@ -938,6 +974,16 @@ showTrajectory.addEventListener("change", (event) => {
 showMesh.addEventListener("change", (event) => {
 	state.showMesh = event.target.checked;
 	updateFrame(state.frame);
+});
+
+inverseOccupancy.addEventListener("change", (event) => {
+	state.inverseOccupancy = event.target.checked;
+	refreshOccupancyVoxels();
+});
+
+cutTopHalf.addEventListener("change", (event) => {
+	state.cutTopHalf = event.target.checked;
+	refreshOccupancyVoxels();
 });
 
 frameScrub.addEventListener("input", (event) => {
