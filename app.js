@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { unzipSync } from "fflate";
 
 const t2mBaseChain = [
   [0, 2, 5, 8, 11],
@@ -80,6 +81,10 @@ const state = {
   heightOffset: 0,
   trajec: [],
   source: "idle",
+  mode: "skeleton",
+  meshVertices: [],
+  meshFaces: [],
+  meshRootPositions: [],
   recording: false,
   frameAccumulator: 0,
   lastTime: 0,
@@ -95,6 +100,7 @@ const playPause = document.getElementById("playPause");
 const jointsFile = document.getElementById("jointsFile");
 const ricFile = document.getElementById("ricFile");
 const npyFile = document.getElementById("npyFile");
+const meshNpzFile = document.getElementById("meshNpzFile");
 const recordBtn = document.getElementById("recordBtn");
 const cropBtn = document.getElementById("cropBtn");
 const clearCropBtn = document.getElementById("clearCropBtn");
@@ -131,6 +137,8 @@ scene.add(ambient, dir);
 
 const skeletonGroup = new THREE.Group();
 scene.add(skeletonGroup);
+const meshGroup = new THREE.Group();
+scene.add(meshGroup);
 
 const trajectoryLine = new THREE.Line(
   new THREE.BufferGeometry(),
@@ -155,6 +163,17 @@ scene.add(plane);
 let jointMeshes = [];
 let boneMeshes = [];
 let bonePairs = [];
+let smplMesh = null;
+
+function disposeMesh(mesh) {
+  if (!mesh) return;
+  mesh.geometry.dispose();
+  if (Array.isArray(mesh.material)) {
+    mesh.material.forEach((material) => material.dispose());
+  } else {
+    mesh.material.dispose();
+  }
+}
 
 function setCameraDefault() {
   const radius = 7.5;
@@ -216,6 +235,23 @@ function preprocessFrames(frames) {
 
   state.trajec = trajec;
   return normalized;
+}
+
+function computeMeshStats(meshFrames) {
+  const min = new THREE.Vector3(Infinity, Infinity, Infinity);
+  const max = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+  for (const frame of meshFrames) {
+    for (const vertex of frame) {
+      min.min(new THREE.Vector3(vertex[0], vertex[1], vertex[2]));
+      max.max(new THREE.Vector3(vertex[0], vertex[1], vertex[2]));
+    }
+  }
+  if (!Number.isFinite(min.x)) {
+    min.set(-1, 0, -1);
+    max.set(1, 2, 1);
+  }
+  state.min.copy(min);
+  state.max.copy(max);
 }
 
 function buildSkeletonMeshes() {
@@ -356,8 +392,81 @@ function updateTrajectory(frameIndex, traj) {
   );
 }
 
+function buildSmplMesh() {
+  if (smplMesh) {
+    disposeMesh(smplMesh);
+    meshGroup.remove(smplMesh);
+    smplMesh = null;
+  }
+  const frames = state.meshVertices;
+  if (!frames.length || !frames[0]?.length) return;
+
+  const firstFrame = frames[0];
+  const positions = new Float32Array(firstFrame.length * 3);
+  for (let i = 0; i < firstFrame.length; i += 1) {
+    positions[i * 3] = firstFrame[i][0];
+    positions[i * 3 + 1] = firstFrame[i][1];
+    positions[i * 3 + 2] = firstFrame[i][2];
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  if (state.meshFaces.length) {
+    const indices = new Uint32Array(state.meshFaces.length * 3);
+    for (let i = 0; i < state.meshFaces.length; i += 1) {
+      indices[i * 3] = state.meshFaces[i][0];
+      indices[i * 3 + 1] = state.meshFaces[i][1];
+      indices[i * 3 + 2] = state.meshFaces[i][2];
+    }
+    geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+    geometry.computeVertexNormals();
+    smplMesh = new THREE.Mesh(
+      geometry,
+      new THREE.MeshStandardMaterial({
+        color: "#d64a3a",
+        transparent: true,
+        opacity: 0.38,
+        roughness: 0.6,
+        metalness: 0.02,
+        side: THREE.DoubleSide,
+      })
+    );
+  } else {
+    smplMesh = new THREE.Points(
+      geometry,
+      new THREE.PointsMaterial({
+        color: "#d64a3a",
+        size: 0.012,
+        sizeAttenuation: true,
+        transparent: true,
+        opacity: 0.7,
+      })
+    );
+  }
+  meshGroup.add(smplMesh);
+}
+
+function updateMesh(frameIndex) {
+  if (!smplMesh) return;
+  const frame = state.meshVertices[Math.min(frameIndex, state.meshVertices.length - 1)];
+  if (!frame) return;
+  const positions = smplMesh.geometry.attributes.position.array;
+  for (let i = 0; i < frame.length; i += 1) {
+    positions[i * 3] = frame[i][0];
+    positions[i * 3 + 1] = frame[i][1];
+    positions[i * 3 + 2] = frame[i][2];
+  }
+  smplMesh.geometry.attributes.position.needsUpdate = true;
+  if (smplMesh.isMesh) {
+    smplMesh.geometry.computeVertexNormals();
+  }
+}
+
 function setFrames(frames) {
   state.frames = preprocessFrames(frames);
+  state.mode = "skeleton";
+  state.meshVertices = [];
+  state.meshFaces = [];
+  state.meshRootPositions = [];
   state.joints = frames[0]?.length ?? 0;
   state.maxFrames = state.frames.length;
   state.frame = 0;
@@ -368,9 +477,51 @@ function setFrames(frames) {
   frameScrub.max = Math.max(0, state.maxFrames - 1);
   frameScrub.value = "0";
   buildSkeletonMeshes();
+  buildSmplMesh();
+  skeletonGroup.visible = true;
+  meshGroup.visible = false;
+  plane.visible = true;
+  trajectoryLine.visible = true;
   updateSkeleton(0);
   if (status) {
     status.textContent = `Loaded: ${state.source} (${state.maxFrames} frames)`;
+  }
+}
+
+function setMeshFrames(vertices, faces, rootPositions = []) {
+  state.mode = "mesh";
+  state.frames = [];
+  state.trajec = [];
+  state.meshVertices = vertices;
+  state.meshFaces = faces;
+  state.meshRootPositions = rootPositions;
+  state.joints = 0;
+  state.maxFrames = Math.max(vertices.length, 1);
+  state.frame = 0;
+  state.playing = state.maxFrames > 1;
+  state.frameAccumulator = 0;
+  state.lastTime = 0;
+  playPause.textContent = state.playing ? "Pause" : "Play";
+  frameScrub.max = Math.max(0, state.maxFrames - 1);
+  frameScrub.value = "0";
+  buildSkeletonMeshes();
+  buildSmplMesh();
+  computeMeshStats(vertices);
+  skeletonGroup.visible = false;
+  meshGroup.visible = true;
+  plane.visible = false;
+  trajectoryLine.visible = false;
+  updateMesh(0);
+  if (status) {
+    status.textContent = `Loaded mesh: ${state.source} (${state.maxFrames} frames)`;
+  }
+}
+
+function updateCurrentFrame(frameIndex) {
+  if (state.mode === "mesh") {
+    updateMesh(frameIndex);
+  } else {
+    updateSkeleton(frameIndex);
   }
 }
 
@@ -389,7 +540,7 @@ function animate(time) {
     if (nextFrame !== state.frame) {
       state.frame = nextFrame;
       frameScrub.value = String(state.frame);
-      updateSkeleton(state.frame);
+      updateCurrentFrame(state.frame);
       if (state.recording && state.frame >= state.maxFrames - 1) {
         stopRecording();
       }
@@ -589,6 +740,151 @@ function parseNpy(buffer) {
   return { ok: true, frames, shape, descr, headerText, fortranOrder };
 }
 
+function parseNpyRaw(bytes) {
+  if (bytes.length < 10) throw new Error("buffer too small");
+  const magicOk =
+    bytes[0] === 0x93 &&
+    bytes[1] === 0x4e &&
+    bytes[2] === 0x55 &&
+    bytes[3] === 0x4d &&
+    bytes[4] === 0x50 &&
+    bytes[5] === 0x59;
+  if (!magicOk) throw new Error("bad npy magic header");
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const major = view.getUint8(6);
+  const minor = view.getUint8(7);
+  let headerLen = 0;
+  let offset = 8;
+  if (major === 1) {
+    headerLen = view.getUint16(offset, true);
+    offset += 2;
+  } else if (major === 2) {
+    headerLen = view.getUint32(offset, true);
+    offset += 4;
+  } else {
+    throw new Error(`unsupported npy version ${major}.${minor}`);
+  }
+  const headerText = new TextDecoder("latin1").decode(
+    new Uint8Array(bytes.buffer, bytes.byteOffset + offset, headerLen)
+  );
+  offset += headerLen;
+  const descrMatch = headerText.match(/['"]descr['"]\s*:\s*['"]([^'"]+)['"]/);
+  const shapeMatch = headerText.match(/['"]shape['"]\s*:\s*\(([^)]*)\)/);
+  const fortranMatch = headerText.match(/['"]fortran_order['"]\s*:\s*(True|False)/);
+  if (!descrMatch || !shapeMatch) throw new Error("missing descr or shape in npy header");
+  const descr = descrMatch[1];
+  const fortranOrder = fortranMatch ? fortranMatch[1] === "True" : false;
+  const shape = shapeMatch[1]
+    .split(",")
+    .map((v) => v.trim())
+    .filter((v) => v.length > 0)
+    .map((v) => Number.parseInt(v, 10));
+  const total = shape.reduce((a, b) => a * b, 1);
+  if (descr !== "<f4" && descr !== "<i4" && descr !== "|u1") {
+    throw new Error(`unsupported dtype ${descr}`);
+  }
+  let data;
+  if (descr === "<f4") {
+    data = new Float32Array(total);
+    for (let i = 0; i < total; i += 1) {
+      data[i] = view.getFloat32(offset + i * 4, true);
+    }
+  } else if (descr === "<i4") {
+    data = new Int32Array(total);
+    for (let i = 0; i < total; i += 1) {
+      data[i] = view.getInt32(offset + i * 4, true);
+    }
+  } else {
+    data = new Uint8Array(bytes.buffer, bytes.byteOffset + offset, total);
+  }
+  return { descr, shape, fortranOrder, data };
+}
+
+function parseNpz(buffer) {
+  const files = unzipSync(new Uint8Array(buffer));
+  const arrays = {};
+  for (const [name, bytes] of Object.entries(files)) {
+    if (!name.endsWith(".npy")) continue;
+    const key = name.replace(/\.npy$/, "");
+    try {
+      arrays[key] = parseNpyRaw(bytes);
+    } catch {
+      // Ignore unsupported metadata arrays.
+    }
+  }
+  return arrays;
+}
+
+function pickArray(arrays, keys) {
+  for (const key of keys) {
+    if (arrays[key]) return arrays[key];
+  }
+  return null;
+}
+
+function vectorRows(arrayInfo) {
+  const rows = arrayInfo.shape[0] || 0;
+  const cols = arrayInfo.shape[1] || 0;
+  const out = [];
+  for (let r = 0; r < rows; r += 1) {
+    const row = [];
+    for (let c = 0; c < cols; c += 1) {
+      row.push(arrayInfo.data[r * cols + c]);
+    }
+    out.push(row);
+  }
+  return out;
+}
+
+function vectorFrames(arrayInfo) {
+  const frameCount = arrayInfo.shape[0] || 0;
+  const pointCount = arrayInfo.shape[1] || 0;
+  const dims = arrayInfo.shape[2] || 0;
+  const out = [];
+  for (let frameIdx = 0; frameIdx < frameCount; frameIdx += 1) {
+    const frame = [];
+    for (let pointIdx = 0; pointIdx < pointCount; pointIdx += 1) {
+      const point = [];
+      for (let dim = 0; dim < dims; dim += 1) {
+        const idx = frameIdx * pointCount * dims + pointIdx * dims + dim;
+        point.push(arrayInfo.data[idx]);
+      }
+      frame.push(point);
+    }
+    out.push(frame);
+  }
+  return out;
+}
+
+function toYUp(point) {
+  return [point[0], point[2], point[1]];
+}
+
+function loadMeshNpzFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const arrays = parseNpz(reader.result);
+      const verticesArray = pickArray(arrays, ["vertices", "verts", "smpl_verts", "smpl_vertices"]);
+      const facesArray = pickArray(arrays, ["faces", "smpl_faces"]);
+      const rootsArray = pickArray(arrays, ["root_pos", "transl"]);
+      if (!verticesArray) {
+        alert("Mesh NPZ has no vertices array (vertices/verts/smpl_verts/smpl_vertices).");
+        return;
+      }
+      const vertices = vectorFrames(verticesArray).map((frame) => frame.map(toYUp));
+      const faces = facesArray ? vectorRows(facesArray) : [];
+      const roots = rootsArray ? vectorRows(rootsArray).map(toYUp) : [];
+      state.source = file.name;
+      setMeshFrames(vertices, faces, roots);
+    } catch (err) {
+      console.error("Mesh NPZ parse error", err);
+      alert("Failed to parse mesh NPZ file. Check console for details.");
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
 function ricFromNpy(frames) {
   const dims = frames[0]?.length ?? 0;
   if (dims >= 67) {
@@ -649,7 +945,7 @@ frameScrub.addEventListener("input", (event) => {
   state.playing = false;
   state.recording = false;
   playPause.textContent = "Play";
-  updateSkeleton(state.frame);
+  updateCurrentFrame(state.frame);
 });
 
 jointsFile.addEventListener("change", (event) => {
@@ -692,6 +988,12 @@ npyFile.addEventListener("change", (event) => {
     state.source = file.name;
     setFrames(joints);
   });
+});
+
+meshNpzFile.addEventListener("change", (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+  loadMeshNpzFile(file);
 });
 
 let recorder = null;
@@ -765,7 +1067,7 @@ function startRecording() {
   state.frame = 0;
   state.frameAccumulator = 0;
   state.lastTime = 0;
-  updateSkeleton(0);
+  updateCurrentFrame(0);
   if (state.crop.active && state.crop.rect) {
     drawCropFrame();
   }

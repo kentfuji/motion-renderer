@@ -12,8 +12,12 @@
 			<div class="controls">
 				<button id="playPause" class="btn">Play</button>
 				<label class="btn file-btn">
-					Load Occupancy NPZ
+					Load Voxel A NPZ
 					<input id="npzFile" type="file" accept=".npz" />
+				</label>
+				<label class="btn file-btn">
+					Load Voxel B NPZ
+					<input id="compareNpzFile" type="file" accept=".npz" />
 				</label>
 				<label class="btn file-btn">
 					Load Mesh NPZ
@@ -68,6 +72,10 @@
 					SMPL Mesh
 				</label>
 				<label class="field">
+					<input id="showCompareOccupancy" type="checkbox" checked />
+					Show Voxel B
+				</label>
+				<label class="field">
 					<input id="inverseOccupancy" type="checkbox" />
 					Inverse Occupancy
 				</label>
@@ -92,13 +100,13 @@
 				<div id="cropBox" class="crop-box"></div>
 			</div>
 			<div class="hint">
-				Drag to orbit · Scroll to zoom · Load occupancy NPZ and optionally a separate mesh NPZ (vertices/faces), then load motion from a separate file like motion-render
+				Drag to orbit · Scroll to zoom · Load voxel A and voxel B to overlay/compare them; mesh NPZ remains independent
 			</div>
 		</main>
 
 		<footer class="footer">
-			<div id="status">Motion: none · Occupancy: none · Mesh: none</div>
-			<div id="stats">Load an occupancy NPZ with global_occ, llb, and unit.</div>
+			<div id="status">Motion: none · Occupancy A: none · Occupancy B: none · Mesh: none</div>
+			<div id="stats">Load voxel NPZ files with global_occ, llb, and unit. Voxel A renders cyan, Voxel B renders orange, and mesh NPZ may be loaded separately.</div>
 		</footer>
 
 		<script type="importmap">

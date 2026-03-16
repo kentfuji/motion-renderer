@@ -40,18 +40,25 @@ const state = {
 	maxFrames: 0,
 	motionSource: "none",
 	occupancySource: "none",
+	occupancyCompareSource: "none",
 	meshSource: "none",
+	meshSourceKind: "none",
 	rootPositions: [],
 	trajectory: [],
 	followRoot: true,
 	showTrajectory: true,
 	showMesh: true,
+	showCompareOccupancy: true,
 	inverseOccupancy: false,
 	cutTopHalf: false,
 	voxelUnit: 0.08,
+	voxelUnitCompare: 0.08,
 	voxelPositions: [],
+	voxelPositionsCompare: [],
 	occupancyGrid: null,
 	occupancyLlb: [],
+	occupancyGridCompare: null,
+	occupancyLlbCompare: [],
 	npzRootPositions: [],
 	npzVertices: [],
 	npzFaces: [],
@@ -68,6 +75,7 @@ const state = {
 const canvas = document.getElementById("canvas");
 const playPause = document.getElementById("playPause");
 const npzFile = document.getElementById("npzFile");
+const compareNpzFile = document.getElementById("compareNpzFile");
 const meshNpzFile = document.getElementById("meshNpzFile");
 const jointsFile = document.getElementById("jointsFile");
 const ricFile = document.getElementById("ricFile");
@@ -84,6 +92,7 @@ const cropPreview = document.getElementById("cropPreview");
 const followRoot = document.getElementById("followRoot");
 const showTrajectory = document.getElementById("showTrajectory");
 const showMesh = document.getElementById("showMesh");
+const showCompareOccupancy = document.getElementById("showCompareOccupancy");
 const inverseOccupancy = document.getElementById("inverseOccupancy");
 const cutTopHalf = document.getElementById("cutTopHalf");
 const fpsInput = document.getElementById("fpsInput");
@@ -142,6 +151,7 @@ let jointMeshes = [];
 let boneMeshes = [];
 let bonePairs = [];
 let voxelMesh = null;
+let voxelMeshCompare = null;
 let smplMesh = null;
 
 function hasMotionFrames() {
@@ -247,38 +257,58 @@ function buildSkeletonMeshes() {
 	}
 }
 
+function buildVoxelLayer(positions, unit, color, opacity) {
+	const count = positions.length;
+	if (count === 0) return null;
+
+	const geometry = new THREE.BoxGeometry(unit * 0.94, unit * 0.94, unit * 0.94);
+	const material = new THREE.MeshStandardMaterial({
+		color,
+		transparent: true,
+		opacity,
+		roughness: 0.5,
+		metalness: 0.02,
+		depthWrite: false,
+	});
+	const mesh = new THREE.InstancedMesh(geometry, material, count);
+	mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+	const matrix = new THREE.Matrix4();
+	for (let i = 0; i < count; i += 1) {
+		const pos = positions[i];
+		matrix.makeTranslation(pos[0], pos[1], pos[2]);
+		mesh.setMatrixAt(i, matrix);
+	}
+	mesh.instanceMatrix.needsUpdate = true;
+	return mesh;
+}
+
 function buildVoxelMesh() {
 	if (voxelMesh) {
 		disposeMesh(voxelMesh);
 		occupancyGroup.remove(voxelMesh);
 		voxelMesh = null;
 	}
-	const count = state.voxelPositions.length;
-	if (count === 0) return;
-
-	const geometry = new THREE.BoxGeometry(
-		state.voxelUnit * 0.94,
-		state.voxelUnit * 0.94,
-		state.voxelUnit * 0.94
-	);
-	const material = new THREE.MeshStandardMaterial({
-		color: "#4fb0c6",
-		transparent: true,
-		opacity: 0.14,
-		roughness: 0.5,
-		metalness: 0.02,
-		depthWrite: false,
-	});
-	voxelMesh = new THREE.InstancedMesh(geometry, material, count);
-	voxelMesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-	const matrix = new THREE.Matrix4();
-	for (let i = 0; i < count; i += 1) {
-		const pos = state.voxelPositions[i];
-		matrix.makeTranslation(pos[0], pos[1], pos[2]);
-		voxelMesh.setMatrixAt(i, matrix);
+	if (voxelMeshCompare) {
+		disposeMesh(voxelMeshCompare);
+		occupancyGroup.remove(voxelMeshCompare);
+		voxelMeshCompare = null;
 	}
-	voxelMesh.instanceMatrix.needsUpdate = true;
-	occupancyGroup.add(voxelMesh);
+
+	voxelMesh = buildVoxelLayer(state.voxelPositions, state.voxelUnit, "#4fb0c6", 0.14);
+	if (voxelMesh) {
+		occupancyGroup.add(voxelMesh);
+	}
+
+	voxelMeshCompare = buildVoxelLayer(
+		state.voxelPositionsCompare,
+		state.voxelUnitCompare,
+		"#f0a53a",
+		0.2
+	);
+	if (voxelMeshCompare) {
+		voxelMeshCompare.visible = Boolean(state.showCompareOccupancy);
+		occupancyGroup.add(voxelMeshCompare);
+	}
 }
 
 function buildSmplMesh() {
@@ -344,6 +374,10 @@ function computeStats() {
 		}
 	}
 	for (const pos of state.voxelPositions) {
+		min.min(new THREE.Vector3(pos[0], pos[1], pos[2]));
+		max.max(new THREE.Vector3(pos[0], pos[1], pos[2]));
+	}
+	for (const pos of state.voxelPositionsCompare) {
 		min.min(new THREE.Vector3(pos[0], pos[1], pos[2]));
 		max.max(new THREE.Vector3(pos[0], pos[1], pos[2]));
 	}
@@ -496,6 +530,9 @@ function updateFrame(frameIndex) {
 	}
 
 	occupancyGroup.position.set(-offsetX, 0, -offsetZ);
+	if (voxelMeshCompare) {
+		voxelMeshCompare.visible = Boolean(state.showCompareOccupancy);
+	}
 	const meshRoot = getFrameAt(state.npzRootPositions, frameIndex);
 	const meshOffset = meshRoot
 		? [root[0] - meshRoot[0], root[1] - meshRoot[1], root[2] - meshRoot[2]]
@@ -522,16 +559,20 @@ function updateFrame(frameIndex) {
 }
 
 function updateStatus() {
-	status.textContent = `Motion: ${state.motionSource} · Occupancy: ${state.occupancySource} · Mesh: ${state.meshSource}`;
+	status.textContent = `Motion: ${state.motionSource} · Occupancy A: ${state.occupancySource} · Occupancy B: ${state.occupancyCompareSource} · Mesh: ${state.meshSource}`;
 	const motionBounds = computeBounds(flattenMotionFrames(state.frames));
 	const occupancyBounds = computeBounds(state.voxelPositions);
+	const compareOccupancyBounds = computeBounds(state.voxelPositionsCompare);
 	const meshBounds = computeBounds(state.npzVertices.flat());
 	const motionText = motionBounds
 		? `Motion bbox: ${motionBounds.size.x.toFixed(2)} x ${motionBounds.size.y.toFixed(2)} x ${motionBounds.size.z.toFixed(2)}`
 		: "Motion bbox: none";
 	const occupancyText = occupancyBounds
-		? `Occupancy bbox: ${occupancyBounds.size.x.toFixed(2)} x ${occupancyBounds.size.y.toFixed(2)} x ${occupancyBounds.size.z.toFixed(2)}`
-		: "Occupancy bbox: none";
+		? `Voxel A bbox: ${occupancyBounds.size.x.toFixed(2)} x ${occupancyBounds.size.y.toFixed(2)} x ${occupancyBounds.size.z.toFixed(2)}`
+		: "Voxel A bbox: none";
+	const compareOccupancyText = compareOccupancyBounds
+		? `Voxel B bbox: ${compareOccupancyBounds.size.x.toFixed(2)} x ${compareOccupancyBounds.size.y.toFixed(2)} x ${compareOccupancyBounds.size.z.toFixed(2)}`
+		: "Voxel B bbox: none";
 	const meshText = meshBounds
 		? `SMPL bbox: ${meshBounds.size.x.toFixed(2)} x ${meshBounds.size.y.toFixed(2)} x ${meshBounds.size.z.toFixed(2)}`
 		: "SMPL bbox: none";
@@ -542,7 +583,10 @@ function updateStatus() {
 	const occModeText = state.inverseOccupancy ? "inverse occupancy voxels" : "free occupancy voxels";
 	const occCutText = state.cutTopHalf ? " · top half cut" : "";
 	const meshWarnText = state.meshWarning ? ` · ${state.meshWarning}` : "";
-	stats.textContent = `Frames: ${state.maxFrames} · ${occModeText}: ${state.voxelPositions.length.toLocaleString()}${occCutText} · Voxel unit: ${state.voxelUnit} · ${motionText} · ${occupancyText} · ${meshText} · ${trajText}${meshWarnText}`;
+	const compareCountText = state.voxelPositionsCompare.length
+		? `${occModeText} B: ${state.voxelPositionsCompare.length.toLocaleString()} · Voxel B unit: ${state.voxelUnitCompare}`
+		: "Voxel B: none";
+	stats.textContent = `Frames: ${state.maxFrames} · ${occModeText} A: ${state.voxelPositions.length.toLocaleString()}${occCutText} · Voxel A unit: ${state.voxelUnit} · ${compareCountText} · ${motionText} · ${occupancyText} · ${compareOccupancyText} · ${meshText} · ${trajText}${meshWarnText}`;
 }
 
 function applyState() {
@@ -585,12 +629,33 @@ function setOccupancyData(
 	applyState();
 }
 
+function setCompareOccupancyData(voxelPositions, unit, sourceName) {
+	state.voxelPositionsCompare = voxelPositions;
+	state.voxelUnitCompare = unit;
+	state.occupancyCompareSource = sourceName;
+	applyState();
+}
+
 function setMeshData(npzRootPositions, npzVertices, npzFaces, sourceName) {
 	state.npzRootPositions = npzRootPositions;
 	state.npzVertices = npzVertices;
 	state.npzFaces = npzFaces;
 	state.meshSource = sourceName;
+	state.meshSourceKind = sourceName === "none" ? "none" : "external";
 	applyState();
+}
+
+function setMeshDataWithKind(npzRootPositions, npzVertices, npzFaces, sourceName, sourceKind) {
+	state.npzRootPositions = npzRootPositions;
+	state.npzVertices = npzVertices;
+	state.npzFaces = npzFaces;
+	state.meshSource = sourceName;
+	state.meshSourceKind = sourceKind;
+	applyState();
+}
+
+function clearMeshData() {
+	setMeshDataWithKind([], [], [], "none", "none");
 }
 
 function animate(time) {
@@ -915,14 +980,24 @@ function extractVoxelPositions(globalOcc, llb, unit, inverse = false, cutTopHalf
 }
 
 function refreshOccupancyVoxels() {
-	if (!state.occupancyGrid || state.occupancyLlb.length < 3) return;
-	state.voxelPositions = extractVoxelPositions(
-		state.occupancyGrid,
-		state.occupancyLlb,
-		state.voxelUnit,
-		state.inverseOccupancy,
-		state.cutTopHalf
-	);
+	if (state.occupancyGrid && state.occupancyLlb.length >= 3) {
+		state.voxelPositions = extractVoxelPositions(
+			state.occupancyGrid,
+			state.occupancyLlb,
+			state.voxelUnit,
+			state.inverseOccupancy,
+			state.cutTopHalf
+		);
+	}
+	if (state.occupancyGridCompare && state.occupancyLlbCompare.length >= 3) {
+		state.voxelPositionsCompare = extractVoxelPositions(
+			state.occupancyGridCompare,
+			state.occupancyLlbCompare,
+			state.voxelUnitCompare,
+			state.inverseOccupancy,
+			state.cutTopHalf
+		);
+	}
 	computeStats();
 	buildVoxelMesh();
 	updateFrame(state.frame);
@@ -963,18 +1038,67 @@ function loadOccupancyFile(file) {
 			);
 			setOccupancyData(voxelPositions, unit, file.name);
 			const meshData = extractMeshData(arrays);
-			if (meshData.npzVertices.length) {
+			const hasEmbeddedMesh = meshData.npzVertices.length > 0;
+			const hasExternalMesh = state.meshSourceKind === "external" && state.npzVertices.length > 0;
+			if (hasEmbeddedMesh && !hasExternalMesh) {
 				state.meshWarning = "";
-				setMeshData(meshData.npzRootPositions, meshData.npzVertices, meshData.npzFaces, `${file.name} (embedded)`);
-			} else if (!state.npzVertices.length) {
+				setMeshDataWithKind(
+					meshData.npzRootPositions,
+					meshData.npzVertices,
+					meshData.npzFaces,
+					`${file.name} (embedded)`,
+					"embedded"
+				);
+			} else if (hasEmbeddedMesh && hasExternalMesh) {
+				state.meshWarning = "Using separately loaded mesh NPZ; embedded mesh ignored";
+				updateStatus();
+			} else if (hasExternalMesh) {
+				state.meshWarning = "";
+				updateStatus();
+			} else {
 				state.meshWarning = "SMPL mesh unavailable: load a separate mesh NPZ";
+				if (state.meshSourceKind === "embedded" || state.npzVertices.length) {
+					clearMeshData();
+				} else {
+					updateStatus();
+				}
 			}
 			if (llbInfo.usedFallback) {
-				status.textContent = `Motion: ${state.motionSource} · Occupancy: ${state.occupancySource} (fallback llb) · Mesh: ${state.meshSource}`;
+				status.textContent = `Motion: ${state.motionSource} · Occupancy A: ${state.occupancySource} (fallback llb) · Occupancy B: ${state.occupancyCompareSource} · Mesh: ${state.meshSource}`;
 			}
 		} catch (error) {
 			console.error(error);
 			alert(`Failed to parse occupancy NPZ: ${error.message}`);
+		}
+	};
+	reader.readAsArrayBuffer(file);
+}
+
+function loadCompareOccupancyFile(file) {
+	const reader = new FileReader();
+	reader.onload = () => {
+		try {
+			const arrays = parseProcessOccNpz(reader.result);
+			const rawLlb = vectorValue(arrays.llb);
+			const unit = scalarValue(arrays.unit);
+			const llbInfo = sanitizeLlb(rawLlb, arrays, unit);
+			const llb = llbInfo.value;
+			state.occupancyGridCompare = arrays.global_occ;
+			state.occupancyLlbCompare = llb;
+			const voxelPositions = extractVoxelPositions(
+				arrays.global_occ,
+				llb,
+				unit,
+				state.inverseOccupancy,
+				state.cutTopHalf
+			);
+			setCompareOccupancyData(voxelPositions, unit, file.name);
+			if (llbInfo.usedFallback) {
+				status.textContent = `Motion: ${state.motionSource} · Occupancy A: ${state.occupancySource} · Occupancy B: ${state.occupancyCompareSource} (fallback llb) · Mesh: ${state.meshSource}`;
+			}
+		} catch (error) {
+			console.error(error);
+			alert(`Failed to parse compare occupancy NPZ: ${error.message}`);
 		}
 	};
 	reader.readAsArrayBuffer(file);
@@ -991,7 +1115,7 @@ function loadMeshNpzFile(file) {
 				return;
 			}
 			state.meshWarning = "";
-			setMeshData(meshData.npzRootPositions, meshData.npzVertices, meshData.npzFaces, file.name);
+			setMeshDataWithKind(meshData.npzRootPositions, meshData.npzVertices, meshData.npzFaces, file.name, "external");
 		} catch (error) {
 			console.error(error);
 			alert(`Failed to parse mesh NPZ: ${error.message}`);
@@ -1084,6 +1208,12 @@ showMesh.addEventListener("change", (event) => {
 	updateFrame(state.frame);
 });
 
+showCompareOccupancy.addEventListener("change", (event) => {
+	state.showCompareOccupancy = event.target.checked;
+	updateFrame(state.frame);
+	updateStatus();
+});
+
 inverseOccupancy.addEventListener("change", (event) => {
 	state.inverseOccupancy = event.target.checked;
 	refreshOccupancyVoxels();
@@ -1106,6 +1236,12 @@ npzFile.addEventListener("change", (event) => {
 	const file = event.target.files[0];
 	if (!file) return;
 	loadOccupancyFile(file);
+});
+
+compareNpzFile.addEventListener("change", (event) => {
+	const file = event.target.files[0];
+	if (!file) return;
+	loadCompareOccupancyFile(file);
 });
 
 meshNpzFile.addEventListener("change", (event) => {
